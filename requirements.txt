@@ -1,0 +1,11 @@
+pandas
+numpy
+yfinance
+pyarrow
+duckdb
+riskfolio-lib
+scipy
+statsmodels
+streamlit
+plotly
+pyyaml

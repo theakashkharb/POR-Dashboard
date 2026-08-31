@@ -1,0 +1,13 @@
+.idea/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+data/*
+!data/raw/
+!data/raw/nifty500_universe.csv
+
+database/*.duckdb
+
+.env
