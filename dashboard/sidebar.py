@@ -1,131 +1,181 @@
+from __future__ import annotations
+
 import pandas as pd
 import streamlit as st
 
-from src.data.manager import get_data
+from src.data.repository import load_market_data, load_universe
 
 
 UNIVERSE_PATH = "data/raw/nifty500_universe.csv"
 
-DATA_MIN_DATE = pd.Timestamp(
-    "1996-01-01"
-).date()
-
+DATA_MIN_DATE = pd.Timestamp("2000-01-01").date()
 DATA_MAX_DATE = pd.Timestamp.today().date()
 
 
 # ============================================================
-# LOAD UNIVERSE
+# CACHED UNIVERSE
 # ============================================================
 
-@st.cache_data
-def load_universe():
+@st.cache_data(show_spinner=False)
+def _load_universe() -> pd.DataFrame:
 
-    universe = pd.read_csv(
-        UNIVERSE_PATH
-    )
+    universe = pd.read_csv(UNIVERSE_PATH)
 
-    universe["sector"] = (
-        universe["sector"].astype(str)
-    )
+    required_columns = {
+        "sector",
+        "symbol",
+        "yf_ticker",
+    }
 
-    universe["symbol"] = (
-        universe["symbol"].astype(str)
-    )
+    missing = required_columns - set(universe.columns)
 
-    universe["yf_ticker"] = (
-        universe["yf_ticker"].astype(str)
-    )
+    if missing:
+        raise ValueError(
+            f"Universe file is missing columns: {sorted(missing)}"
+        )
+
+    universe["sector"] = universe["sector"].astype(str)
+    universe["symbol"] = universe["symbol"].astype(str)
+    universe["yf_ticker"] = universe["yf_ticker"].astype(str)
 
     return universe
 
 
 # ============================================================
-# SIDEBAR
+# LOCAL MARKET DATA
 # ============================================================
 
-def render_sidebar():
+@st.cache_data(show_spinner=False)
+def _load_local_market_data() -> pd.DataFrame:
+    return load_market_data()
 
-    universe = load_universe()
 
-    sectors = sorted(
-        universe["sector"]
-        .dropna()
-        .unique()
-        .tolist()
+# ============================================================
+# CLEAR LOADED DATA
+# ============================================================
+
+def _clear_loaded_data() -> None:
+
+    for key in [
+        "market_data",
+        "selected_universe",
+        "loaded_selection_type",
+        "loaded_sector",
+        "loaded_index",
+        "loaded_start",
+        "loaded_end",
+    ]:
+        st.session_state.pop(key, None)
+
+
+# ============================================================
+# RENDER SIDEBAR
+# ============================================================
+
+def render_sidebar() -> None:
+
+    universe = _load_universe()
+
+    st.sidebar.header("Data Selection")
+
+    # ========================================================
+    # UNIVERSE TYPE
+    # ========================================================
+
+    selection_type = st.sidebar.radio(
+        "Universe",
+        [
+            "Sector",
+            "Index",
+            "Custom Stocks",
+        ],
+        key="universe_selection_type",
     )
 
-    st.sidebar.header(
-        "Data Selection"
-    )
+    selected_sector = None
+    selected_index = None
 
-    selected_sector = st.sidebar.selectbox(
-        "Sector",
-        ["All Sectors"] + sectors,
-    )
+    selected_universe = pd.DataFrame()
 
-    # --------------------------------------------------------
-    # Filter universe by sector
-    # --------------------------------------------------------
+    # ========================================================
+    # SECTOR
+    # ========================================================
 
-    if selected_sector == "All Sectors":
+    if selection_type == "Sector":
 
-        filtered_universe = (
-            universe.copy()
+        sectors = sorted(
+            universe["sector"]
+            .dropna()
+            .unique()
+            .tolist()
         )
+
+        selected_sector = st.sidebar.selectbox(
+            "Sector",
+            sectors,
+            key="selected_sector",
+        )
+
+        selected_universe = universe[
+            universe["sector"] == selected_sector
+        ].copy()
+
+    # ========================================================
+    # INDEX
+    # ========================================================
+
+    elif selection_type == "Index":
+
+        selected_index = st.sidebar.selectbox(
+            "Index",
+            ["NIFTY 500"],
+            key="selected_index",
+        )
+
+        selected_universe = universe.copy()
+
+        st.sidebar.caption(
+            "Current index universe is the NIFTY 500 dataset."
+        )
+
+    # ========================================================
+    # CUSTOM STOCKS
+    # ========================================================
 
     else:
 
-        filtered_universe = universe[
-            universe["sector"]
-            == selected_sector
+        stock_options = (
+            universe["symbol"]
+            .dropna()
+            .sort_values()
+            .unique()
+            .tolist()
+        )
+
+        selected_symbols = st.sidebar.multiselect(
+            "Stocks",
+            options=stock_options,
+            default=[],
+            key="selected_custom_stocks",
+            help="Select individual stocks.",
+        )
+
+        selected_universe = universe[
+            universe["symbol"].isin(selected_symbols)
         ].copy()
 
-    # --------------------------------------------------------
-    # Stock selection
-    # --------------------------------------------------------
+    # ========================================================
+    # DATE RANGE
+    # ========================================================
 
-    stock_options = (
-        filtered_universe["symbol"]
-        .sort_values()
-        .tolist()
-    )
-
-    selected_symbols = st.sidebar.multiselect(
-        "Stocks",
-        options=stock_options,
-        default=stock_options[:5],
-    )
-
-    selected_universe = (
-        filtered_universe[
-            filtered_universe["symbol"]
-            .isin(selected_symbols)
-        ]
-        .copy()
-    )
-
-    selected_tickers = (
-        selected_universe[
-            "yf_ticker"
-        ]
-        .tolist()
-    )
-
-    # --------------------------------------------------------
-    # Date range
-    # --------------------------------------------------------
-
-    st.sidebar.subheader(
-        "Date Range"
-    )
+    st.sidebar.subheader("Date Range")
 
     start_date = st.sidebar.date_input(
         "Start Date",
-        value=pd.Timestamp(
-            "2020-01-01"
-        ).date(),
+        value=pd.Timestamp("2020-01-01").date(),
         min_value=DATA_MIN_DATE,
         max_value=DATA_MAX_DATE,
+        key="data_start_date",
     )
 
     end_date = st.sidebar.date_input(
@@ -133,11 +183,12 @@ def render_sidebar():
         value=DATA_MAX_DATE,
         min_value=DATA_MIN_DATE,
         max_value=DATA_MAX_DATE,
+        key="data_end_date",
     )
 
-    # --------------------------------------------------------
-    # Validation
-    # --------------------------------------------------------
+    # ========================================================
+    # VALIDATION
+    # ========================================================
 
     if start_date > end_date:
 
@@ -145,98 +196,149 @@ def render_sidebar():
             "Start Date must be before End Date."
         )
 
-    if not selected_tickers:
+    if selected_universe.empty:
 
-        st.sidebar.warning(
-            "Select at least one stock."
-        )
+        if selection_type == "Custom Stocks":
 
-    # --------------------------------------------------------
-    # Load button
-    # --------------------------------------------------------
+            st.sidebar.caption(
+                "Select stocks to continue."
+            )
+
+    # ========================================================
+    # LOAD BUTTON
+    # ========================================================
 
     load_data = st.sidebar.button(
         "Load Data",
         type="primary",
         use_container_width=True,
+        key="load_market_data",
     )
 
-    # --------------------------------------------------------
-    # Download data
-    # --------------------------------------------------------
+    if not load_data:
+        return
 
-    if load_data:
+    # ========================================================
+    # VALIDATION BEFORE LOADING
+    # ========================================================
 
-        if start_date > end_date:
+    if start_date > end_date:
 
-            st.error(
-                "Start Date must be before End Date."
-            )
+        st.sidebar.error(
+            "Invalid date range."
+        )
 
-            st.stop()
+        return
 
-        if not selected_tickers:
+    if selected_universe.empty:
 
-            st.error(
-                "Please select at least one stock."
-            )
+        st.sidebar.error(
+            "No securities selected."
+        )
 
-            st.stop()
+        return
 
-        with st.spinner(
-            "Downloading and processing market data..."
-        ):
+    selected_tickers = (
+        selected_universe["yf_ticker"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
 
-            try:
+    # ========================================================
+    # LOAD FROM LOCAL PARQUET
+    # ========================================================
 
-                data = get_data(
-                    tickers=selected_tickers,
-                    start=start_date,
-                    end=end_date,
+    with st.spinner(
+        f"Loading {len(selected_tickers)} securities..."
+    ):
+
+        try:
+
+            market_data = _load_local_market_data()
+
+            if market_data.empty:
+
+                st.sidebar.error(
+                    "Local market dataset is empty."
                 )
 
-                if data.empty:
+                return
 
-                    st.error(
-                        "No market data available."
-                    )
+            # ------------------------------------------------
+            # FILTER DATE
+            # ------------------------------------------------
 
-                    st.stop()
+            market_data = market_data[
+                (market_data["Date"] >= pd.Timestamp(start_date))
+                & (market_data["Date"] <= pd.Timestamp(end_date))
+            ]
 
-                data["Date"] = pd.to_datetime(
-                    data["Date"]
+            # ------------------------------------------------
+            # FILTER SELECTED TICKERS
+            # ------------------------------------------------
+
+            market_data = market_data[
+                market_data["Ticker"].isin(selected_tickers)
+            ]
+
+            if market_data.empty:
+
+                st.sidebar.error(
+                    "No market data available for the selected "
+                    "securities and date range."
                 )
 
-                data = data.sort_values(
+                return
+
+            # ------------------------------------------------
+            # SORT
+            # ------------------------------------------------
+
+            market_data = (
+                market_data
+                .sort_values(
                     ["Ticker", "Date"]
                 )
+                .reset_index(drop=True)
+            )
 
-                st.session_state[
-                    "market_data"
-                ] = data
+            # ------------------------------------------------
+            # STORE SESSION STATE
+            # ------------------------------------------------
 
-                st.session_state[
-                    "selected_universe"
-                ] = selected_universe.copy()
+            st.session_state["market_data"] = market_data
 
-                st.session_state[
-                    "loaded_sector"
-                ] = selected_sector
+            st.session_state[
+                "selected_universe"
+            ] = selected_universe.copy()
 
-                st.session_state[
-                    "loaded_start"
-                ] = start_date
+            st.session_state[
+                "loaded_selection_type"
+            ] = selection_type
 
-                st.session_state[
-                    "loaded_end"
-                ] = end_date
+            st.session_state[
+                "loaded_sector"
+            ] = selected_sector
 
-            except Exception as e:
+            st.session_state[
+                "loaded_index"
+            ] = selected_index
 
-                st.error(
-                    f"Unable to load market data: {e}"
-                )
+            st.session_state[
+                "loaded_start"
+            ] = start_date
 
-                st.stop()
+            st.session_state[
+                "loaded_end"
+            ] = end_date
 
-    return universe
+            st.sidebar.success(
+                f"Loaded {len(selected_tickers)} securities."
+            )
+
+        except Exception as exc:
+
+            st.sidebar.error(
+                f"Unable to load local market data: {exc}"
+            )

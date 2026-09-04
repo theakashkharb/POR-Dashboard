@@ -1,108 +1,108 @@
-"""
-POR-Dashboard
-Data Manager
-============
-
-Coordinates the market-data workflow:
-
-    Download → Clean → Filter → Combine
-
-This module should NOT contain:
-    - Feature engineering
-    - Stock selection logic
-    - Portfolio calculations
-    - Risk calculations
-"""
-
 from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
-from src.data.downloader import download_stock
 from src.data.cleaner import clean_stock
+from src.data.downloader import download_stocks
+from src.data.storage import load_market_data
 
 
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def get_data(
-    tickers: list[str],
+    tickers,
     start=None,
     end=None,
-    period: str = "max",
-) -> pd.DataFrame:
-    """
-    Download, clean, filter, and combine stock data.
+    period="max",
+):
 
-    Parameters
-    ----------
-    tickers : list[str]
-        Stock ticker symbols.
-
-    start : optional
-        Start date for filtering.
-
-    end : optional
-        End date for filtering.
-
-    period : str, default="max"
-        Period passed to the downloader.
-
-    Returns
-    -------
-    pd.DataFrame
-        Combined cleaned market data.
-
-    Raises
-    ------
-    ValueError
-        If no valid data is available.
-    """
+    tickers = tuple(
+        dict.fromkeys(
+            str(ticker).strip()
+            for ticker in tickers
+            if ticker
+        )
+    )
 
     if not tickers:
         raise ValueError("Ticker list cannot be empty.")
 
-    all_data: list[pd.DataFrame] = []
+    # Read local Parquet first.
+    stored = load_market_data()
 
-    for ticker in tickers:
+    if not stored.empty:
 
-        # 1. Download
-        data = download_stock(
-            ticker,
-            period=period,
-        )
+        stored = stored[
+            stored["Ticker"].isin(tickers)
+        ].copy()
 
-        if data.empty:
-            continue
-
-        # 2. Clean
-        data = clean_stock(data)
-
-        if data.empty:
-            continue
-
-        # 3. Date filtering
         if start is not None:
-            data = data[
-                data["Date"] >= pd.to_datetime(start)
+            stored = stored[
+                stored["Date"] >= pd.to_datetime(start)
             ]
 
         if end is not None:
-            data = data[
-                data["Date"] <= pd.to_datetime(end)
+            stored = stored[
+                stored["Date"] <= pd.to_datetime(end)
             ]
 
-        if data.empty:
+        if not stored.empty:
+            return stored.sort_values(
+                ["Ticker", "Date"]
+            ).reset_index(drop=True)
+
+    # Fallback: batch download.
+    data = download_stocks(
+        list(tickers),
+        start=start,
+        end=end,
+        period=period,
+    )
+
+    if data.empty:
+        raise ValueError("No valid market data available.")
+
+    # Clean each ticker independently.
+    cleaned = []
+
+    for ticker, ticker_data in data.groupby(
+        "Ticker",
+        sort=False,
+    ):
+
+        try:
+            result = clean_stock(
+                ticker_data.copy()
+            )
+        except Exception as e:
+            print(
+                f"CLEANING FAILED: {ticker} | {e}"
+            )
             continue
 
-        all_data.append(data)
+        if not result.empty:
+            cleaned.append(result)
 
-    # 4. Combine all valid tickers
-    if not all_data:
+    if not cleaned:
         raise ValueError(
-            "No valid data available."
+            "No valid market data remained after cleaning."
         )
 
-    return pd.concat(
-        all_data,
+    combined = pd.concat(
+        cleaned,
         ignore_index=True,
     )
+
+    if start is not None:
+        combined = combined[
+            combined["Date"] >= pd.to_datetime(start)
+        ]
+
+    if end is not None:
+        combined = combined[
+            combined["Date"] <= pd.to_datetime(end)
+        ]
+
+    return combined.sort_values(
+        ["Ticker", "Date"]
+    ).reset_index(drop=True)

@@ -1,166 +1,208 @@
-"""
-POR-Dashboard
-Data Downloader
-==============
-
-Responsible only for downloading raw market data.
-
-This module:
-    - Downloads OHLCV data
-    - Normalizes the output structure
-    - Adds the Ticker column
-
-It does NOT:
-    - Clean missing data
-    - Screen assets
-    - Select assets
-    - Calculate returns
-    - Calculate risk
-"""
-
 from __future__ import annotations
 
 import pandas as pd
 import yfinance as yf
 
 
-def download_stock(
-    ticker: str,
+REQUIRED_COLUMNS = [
+    "Ticker",
+    "Date",
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume",
+]
+
+
+def _normalise_downloaded_data(
+    data: pd.DataFrame,
+    tickers: list[str],
+) -> pd.DataFrame:
+
+    if data.empty:
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
+
+    frames = []
+
+    # yfinance returns a MultiIndex when downloading multiple tickers.
+    if isinstance(data.columns, pd.MultiIndex):
+
+        level_0 = set(data.columns.get_level_values(0))
+        level_1 = set(data.columns.get_level_values(1))
+
+        price_columns = {"Open", "High", "Low", "Close", "Volume"}
+
+        # group_by="ticker" -> Ticker / Price
+        if price_columns.intersection(level_1):
+            for ticker in tickers:
+
+                if ticker not in level_0:
+                    continue
+
+                try:
+                    ticker_data = data[ticker].copy()
+                except KeyError:
+                    continue
+
+                if ticker_data.empty:
+                    continue
+
+                ticker_data = ticker_data.reset_index()
+
+                available = [
+                    column
+                    for column in ["Date", "Open", "High", "Low", "Close", "Volume"]
+                    if column in ticker_data.columns
+                ]
+
+                if "Date" not in available:
+                    continue
+
+                ticker_data = ticker_data[available]
+                ticker_data["Ticker"] = ticker
+
+                ticker_data = ticker_data[
+                    ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume"]
+                ]
+
+                frames.append(ticker_data)
+
+        # Defensive support for Price / Ticker layout.
+        else:
+            for ticker in tickers:
+
+                if ticker not in level_1:
+                    continue
+
+                try:
+                    ticker_data = data.xs(ticker, axis=1, level=1).copy()
+                except KeyError:
+                    continue
+
+                ticker_data = ticker_data.reset_index()
+
+                available = [
+                    column
+                    for column in ["Date", "Open", "High", "Low", "Close", "Volume"]
+                    if column in ticker_data.columns
+                ]
+
+                if "Date" not in available:
+                    continue
+
+                ticker_data = ticker_data[available]
+                ticker_data["Ticker"] = ticker
+
+                ticker_data = ticker_data[
+                    ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume"]
+                ]
+
+                frames.append(ticker_data)
+
+    else:
+        # Single ticker.
+        ticker_data = data.copy().reset_index()
+
+        available = [
+            column
+            for column in ["Date", "Open", "High", "Low", "Close", "Volume"]
+            if column in ticker_data.columns
+        ]
+
+        if "Date" in available:
+            ticker_data = ticker_data[available]
+            ticker_data["Ticker"] = tickers[0]
+
+            ticker_data = ticker_data[
+                ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume"]
+            ]
+
+            frames.append(ticker_data)
+
+    if not frames:
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
+
+    result = pd.concat(frames, ignore_index=True)
+
+    result["Date"] = pd.to_datetime(result["Date"]).dt.tz_localize(None)
+
+    for column in ["Open", "High", "Low", "Close", "Volume"]:
+        result[column] = pd.to_numeric(
+            result[column],
+            errors="coerce",
+        )
+
+    result = result.drop_duplicates(
+        subset=["Ticker", "Date"],
+        keep="last",
+    )
+
+    result = result.sort_values(
+        ["Ticker", "Date"]
+    ).reset_index(drop=True)
+
+    return result
+
+
+def download_stocks(
+    tickers: list[str],
+    start=None,
+    end=None,
     period: str = "max",
 ) -> pd.DataFrame:
-    """
-    Download historical OHLCV data for a single stock.
 
-    Parameters
-    ----------
-    ticker : str
-        Stock ticker symbol.
+    tickers = list(dict.fromkeys(
+        str(ticker).strip()
+        for ticker in tickers
+        if ticker
+    ))
 
-    period : str, default="max"
-        Yahoo Finance download period.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame containing:
-
-        Ticker
-        Date
-        Open
-        High
-        Low
-        Close
-        Volume
-
-    Notes
-    -----
-    An empty DataFrame is returned when no data is available.
-    """
-
-    if not isinstance(ticker, str):
-        raise TypeError("ticker must be a string")
-
-    ticker = ticker.strip()
-
-    if not ticker:
-        raise ValueError("ticker cannot be empty")
+    if not tickers:
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
     try:
-        data = yf.download(
-            ticker,
-            period=period,
-            auto_adjust=False,
-            progress=False,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to download data for {ticker}: {exc}"
-        ) from exc
 
-    if data is None or data.empty:
-        return pd.DataFrame()
+        kwargs = {
+            "tickers": tickers,
+            "auto_adjust": False,
+            "progress": False,
+            "threads": True,
+            "group_by": "ticker",
+        }
 
-    data = data.copy()
+        if start is not None or end is not None:
 
-    # --------------------------------------------------------
-    # Handle Yahoo Finance MultiIndex columns
-    # --------------------------------------------------------
+            if start is not None:
+                kwargs["start"] = pd.to_datetime(start)
 
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
+            if end is not None:
+                # yfinance end date is exclusive.
+                kwargs["end"] = pd.to_datetime(end) + pd.Timedelta(days=1)
 
-    # --------------------------------------------------------
-    # Required OHLCV columns
-    # --------------------------------------------------------
+        else:
+            kwargs["period"] = period
 
-    required_columns = [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
-    ]
+        data = yf.download(**kwargs)
 
-    missing_columns = [
-        column
-        for column in required_columns
-        if column not in data.columns
-    ]
-
-    if missing_columns:
-        raise ValueError(
-            f"Downloaded data for {ticker} is missing columns: "
-            f"{missing_columns}"
+        return _normalise_downloaded_data(
+            data,
+            tickers,
         )
 
-    # --------------------------------------------------------
-    # Reset date index
-    # --------------------------------------------------------
+    except Exception as e:
 
-    data = data.reset_index()
+        print(f"BATCH DOWNLOAD FAILED: {e}")
 
-    # Yahoo may call this column Date
-    # after reset_index(). Validate it explicitly.
-    if "Date" not in data.columns:
-        raise ValueError(
-            f"Downloaded data for {ticker} does not contain Date column"
-        )
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-    # --------------------------------------------------------
-    # Keep only required columns
-    # --------------------------------------------------------
 
-    data = data[
-        [
-            "Date",
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume",
-        ]
-    ].copy()
+def download_stock(
+    ticker: str,
+    period: str = "20y",
+) -> pd.DataFrame:
 
-    # --------------------------------------------------------
-    # Add ticker identifier
-    # --------------------------------------------------------
-
-    data["Ticker"] = ticker
-
-    # --------------------------------------------------------
-    # Final column order
-    # --------------------------------------------------------
-
-    data = data[
-        [
-            "Ticker",
-            "Date",
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume",
-        ]
-    ]
-
-    return data
+    return download_stocks(
+        [ticker],
+        period=period,
+    )
