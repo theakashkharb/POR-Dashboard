@@ -1,210 +1,203 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
-import numpy as np
-
 import pandas as pd
-
 import streamlit as st
 
-import plotly.graph_objects as go
-
-
-from .core import *
-from .core import (
-    _safe_float,
-    _format_percent,
-    _format_sharpe,
-    _normalize_dates,
-    _analysis_window,
-    _get_price_matrix,
-    _get_returns,
-    _annualized_return,
-    _total_return,
-    _annualized_volatility,
-    _sharpe_ratio,
-    _maximum_drawdown,
-    _calculate_sector_returns,
-    _market_metrics,
-    _pastel_sector_style,
-    _pastel_stock_style,
-    _correlation_relationships,
-    TRADING_DAYS,
-    PERIOD_OPTIONS,
+from src.analytics.market import (
+    calculate_annualized_volatility,
+    calculate_maximum_drawdown,
+    calculate_sharpe_ratio,
 )
+from src.analytics.stocks import calculate_stock_period_returns
+from src.features.returns import calculate_simple_returns, create_price_matrix
 
-# ============================================================
-# SECTION
-# ============================================================
 
-def _build_stock_performance(
-    data: pd.DataFrame,
-    universe: pd.DataFrame,
+TOP_STOCK_COUNT = 10
+
+
+def build_top_stocks(
+    market_data: pd.DataFrame,
+    start_date,
+    end_date,
 ) -> pd.DataFrame:
-
-    if data.empty or universe.empty:
-        return pd.DataFrame()
-
-    prices = _get_price_matrix(data)
-
-    if prices.empty:
-        return pd.DataFrame()
-
-    returns = prices.pct_change(fill_method=None)
-
-    mapping = (
-        universe[
-            ["yf_ticker", "symbol", "sector"]
-        ]
-        .dropna(subset=["yf_ticker"])
-        .drop_duplicates("yf_ticker")
-        .set_index("yf_ticker")
+    stock_returns = calculate_stock_period_returns(
+        market_data=market_data,
+        start_date=str(start_date),
+        end_date=str(end_date),
     )
 
-    rows = []
+    if stock_returns.empty:
+        raise ValueError(
+            "No stock return data available for the selected period."
+        )
 
-    for ticker in returns.columns:
+    top_stocks = (
+        stock_returns
+        .sort_values(
+            "Returns",
+            ascending=False,
+        )
+        .head(TOP_STOCK_COUNT)
+        .copy()
+    )
 
-        stock_returns = returns[ticker].dropna()
+    selected_tickers = top_stocks["Ticker"].tolist()
 
-        if stock_returns.empty:
+    selected_market_data = market_data[
+        market_data["Ticker"].isin(selected_tickers)
+        & (
+            market_data["Date"]
+            >= pd.Timestamp(start_date)
+        )
+        & (
+            market_data["Date"]
+            <= pd.Timestamp(end_date)
+        )
+    ].copy()
+
+    if selected_market_data.empty:
+        raise ValueError(
+            "No price data available for the selected stocks."
+        )
+
+    prices = create_price_matrix(
+        selected_market_data
+    )
+
+    daily_returns = calculate_simple_returns(
+        prices
+    )
+
+    metrics = []
+
+    for _, stock in top_stocks.iterrows():
+        ticker = stock["Ticker"]
+
+        if ticker not in daily_returns.columns:
             continue
 
-        if ticker not in mapping.index:
+        stock_daily_returns = daily_returns[
+            ticker
+        ].dropna()
+
+        if stock_daily_returns.empty:
             continue
 
-        meta = mapping.loc[ticker]
-
-        symbol = str(meta["symbol"])
-        sector = str(meta["sector"])
-
-        rows.append(
+        metrics.append(
             {
-                "Symbol": symbol,
                 "Ticker": ticker,
-                "Sector": sector,
-                "Total Return": _total_return(stock_returns),
-                "Annualized Return": _annualized_return(stock_returns),
-                "Volatility": _annualized_volatility(stock_returns),
-                "Sharpe": _sharpe_ratio(stock_returns),
-                "Max Drawdown": _maximum_drawdown(stock_returns),
+                "Returns": float(stock["Returns"]),
+                "Volatility": calculate_annualized_volatility(
+                    stock_daily_returns
+                ),
+                "Sharpe": calculate_sharpe_ratio(
+                    stock_daily_returns
+                ),
+                "Max Drawdown": calculate_maximum_drawdown(
+                    stock_daily_returns
+                ),
+                "Positive Days": float(
+                    (stock_daily_returns > 0).mean()
+                ),
             }
         )
 
-    if not rows:
-        return pd.DataFrame()
-
-    result = pd.DataFrame(rows)
-
-    return result.sort_values(
-        "Annualized Return",
-        ascending=False,
-    ).reset_index(drop=True)
-
-
-def _get_top_stocks(
-    stock_performance: pd.DataFrame,
-    selection_type: str,
-    sector: str | None,
-) -> pd.DataFrame:
-
-    if stock_performance.empty:
-        return pd.DataFrame()
-
-    data = stock_performance.copy()
-
-    # Sector selection:
-    # show top 3 positive stocks in selected sector.
-    if selection_type == "Sector" and sector:
-        data = data[data["Sector"] == sector].copy()
-
-        data = data[
-            data["Total Return"] > 0
-        ]
-
-        return (
-            data
-            .sort_values(
-                "Annualized Return",
-                ascending=False,
-            )
-            .head(3)
+    if not metrics:
+        raise ValueError(
+            "No valid risk metrics could be calculated "
+            "for the selected stocks."
         )
 
-    # Index/custom:
-    # top 3 positive-return stocks from each sector.
-    data = data[
-        data["Total Return"] > 0
-    ].copy()
-
-    if data.empty:
-        return pd.DataFrame()
+    result = pd.DataFrame(metrics)
 
     result = (
-        data
+        result
         .sort_values(
-            ["Sector", "Annualized Return"],
-            ascending=[True, False],
+            "Returns",
+            ascending=False,
         )
-        .groupby("Sector", group_keys=False)
-        .head(3)
+        .reset_index(drop=True)
     )
 
-    return result.reset_index(drop=True)
+    result.insert(
+        0,
+        "Rank",
+        range(1, len(result) + 1),
+    )
+
+    return result
 
 
-def _render_top_performing_stocks(
-    stock_performance: pd.DataFrame,
-    selection_type: str,
-    sector: str | None,
+def render_top_stocks(
+    market_data: pd.DataFrame,
+    start_date,
+    end_date,
 ) -> None:
-
     st.subheader("Top Performing Stocks")
 
-    top_stocks = _get_top_stocks(
-        stock_performance=stock_performance,
-        selection_type=selection_type,
-        sector=sector,
+    top_stocks = build_top_stocks(
+        market_data=market_data,
+        start_date=start_date,
+        end_date=end_date,
     )
 
     if top_stocks.empty:
         st.info(
-            "No positive-return stocks are available "
+            "No Top Performing Stocks data available "
             "for the selected period."
         )
         return
 
-    display = top_stocks[
-        [
-            "Symbol",
-            "Sector",
-            "Total Return",
-            "Annualized Return",
-            "Volatility",
-            "Sharpe",
-        ]
-    ].copy()
+    display_data = top_stocks.copy()
 
-    if selection_type == "Sector" and sector:
-        caption = (
-            f"Top 3 positive-return stocks in {sector}, "
-            "ranked by annualized return."
-        )
-    else:
-        caption = (
-            "Top 3 positive-return stocks from each sector, "
-            "ranked by annualized return."
-        )
+    display_data["Returns"] = display_data[
+        "Returns"
+    ].map(
+        lambda value: f"{value:.2%}"
+    )
 
-    st.caption(caption)
+    display_data["Volatility"] = display_data[
+        "Volatility"
+    ].map(
+        lambda value: f"{value:.2%}"
+    )
 
-    styled = _pastel_stock_style(display)
+    display_data["Sharpe"] = display_data[
+        "Sharpe"
+    ].map(
+        lambda value: f"{value:.2f}"
+    )
+
+    display_data["Max Drawdown"] = display_data[
+        "Max Drawdown"
+    ].map(
+        lambda value: f"{value:.2%}"
+    )
+
+    display_data["Positive Days"] = display_data[
+        "Positive Days"
+    ].map(
+        lambda value: f"{value:.2%}"
+    )
+
+    display_data = display_data.rename(
+        columns={
+            "Ticker": "Stock",
+        }
+    )
 
     st.dataframe(
-        styled,
+        display_data[
+            [
+                "Rank",
+                "Stock",
+                "Returns",
+                "Volatility",
+                "Sharpe",
+                "Max Drawdown",
+                "Positive Days",
+            ]
+        ],
         use_container_width=True,
         hide_index=True,
     )
-
-

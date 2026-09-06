@@ -4,947 +4,297 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-
-TRADING_DAYS = 252
-
-# Minimum observations required before presenting
-# correlation relationships as meaningful.
-MIN_CORRELATION_OBSERVATIONS = 40
-
-# Minimum observations required before assigning
-# Bullish / Bearish / Mixed market regimes.
-MIN_REGIME_OBSERVATIONS = 40
-
-
-# ============================================================
-# FORMATTING
-# ============================================================
-
-def _format_pct(value) -> str:
-
-    if value is None or pd.isna(value):
-        return "—"
-
-    return f"{float(value):.2%}"
-
-
-def _format_number(value) -> str:
-
-    if value is None or pd.isna(value):
-        return "—"
-
-    return f"{float(value):.2f}"
-
-
-# ============================================================
-# PERIOD RETURN
-# ============================================================
-
-def _period_return(
-    returns,
-) -> float:
-
-    if returns is None:
-        return np.nan
-
-    series = (
-        pd.Series(returns)
-        .dropna()
-    )
-
-    if series.empty:
-        return np.nan
-
-    return float(
-        (1.0 + series).prod() - 1.0
-    )
-
-
-# ============================================================
-# MARKET REGIME
-# ============================================================
-
-def _market_regime(
-    market_return,
-    market_returns,
-    sector_returns,
-) -> str:
-    """
-    Market regime uses:
-    - selected-period market return
-    - recent trend
-    - sector breadth
-
-    Very short samples are classified as Short-Term
-    rather than being given a confident Bullish/Bearish label.
-    """
-
-    market_series = (
-        pd.Series(
-            market_returns
-        )
-        .dropna()
-    )
-
-    # --------------------------------------------------------
-    # SHORT SAMPLE
-    # --------------------------------------------------------
-
-    if (
-        len(market_series)
-        < MIN_REGIME_OBSERVATIONS
-    ):
-
-        return "Short-Term"
-
-    market_return = (
-        float(market_return)
-        if market_return is not None
-        and not pd.isna(market_return)
-        else np.nan
-    )
-
-    # --------------------------------------------------------
-    # RECENT TREND
-    # --------------------------------------------------------
-
-    short_window = min(
-        10,
-        len(market_series),
-    )
-
-    recent_returns = (
-        market_series.tail(
-            short_window
-        )
-    )
-
-    trend_return = _period_return(
-        recent_returns
-    )
-
-    # --------------------------------------------------------
-    # SECTOR BREADTH
-    # --------------------------------------------------------
-
-    positive_sectors = 0
-    negative_sectors = 0
-    total_sectors = 0
-
-    if (
-        sector_returns is not None
-        and not sector_returns.empty
-    ):
-
-        for sector in sector_returns.columns:
-
-            sector_return = _period_return(
-                sector_returns[sector]
-            )
-
-            if pd.isna(sector_return):
-                continue
-
-            total_sectors += 1
-
-            if sector_return > 0:
-                positive_sectors += 1
-
-            elif sector_return < 0:
-                negative_sectors += 1
-
-    if total_sectors > 0:
-
-        positive_breadth = (
-            positive_sectors
-            / total_sectors
-        )
-
-        negative_breadth = (
-            negative_sectors
-            / total_sectors
-        )
-
-    else:
-
-        positive_breadth = np.nan
-        negative_breadth = np.nan
-
-    # --------------------------------------------------------
-    # SCORE
-    # --------------------------------------------------------
-
-    bullish_score = 0
-    bearish_score = 0
-
-    if not pd.isna(market_return):
-
-        if market_return > 0:
-            bullish_score += 1
-
-        elif market_return < 0:
-            bearish_score += 1
-
-    if not pd.isna(trend_return):
-
-        if trend_return > 0:
-            bullish_score += 1
-
-        elif trend_return < 0:
-            bearish_score += 1
-
-    if not pd.isna(positive_breadth):
-
-        if positive_breadth > 0.50:
-            bullish_score += 1
-
-        elif positive_breadth < 0.50:
-            bearish_score += 1
-
-    # --------------------------------------------------------
-    # FINAL REGIME
-    # --------------------------------------------------------
-
-    if bullish_score >= 3:
-
-        return "Bullish"
-
-    if bearish_score >= 3:
-
-        return "Bearish"
-
-    return "Mixed"
-
-
-# ============================================================
-# MARKET LEADERS
-# ============================================================
-
-def _get_market_leaders(
-    metrics,
-    sector_returns,
-    market_returns,
-    correlation,
+from src.analytics.stocks import (
+    calculate_market_breadth,
+    calculate_stock_period_returns,
+    find_best_stock,
+    find_worst_stock,
+)
+
+
+def calculate_stock_correlation_pairs(
+    returns: pd.DataFrame,
+    start_date,
+    end_date,
 ):
+    period_returns = returns.loc[
+        (returns.index >= pd.Timestamp(start_date))
+        & (returns.index <= pd.Timestamp(end_date))
+    ].copy()
 
-    result = {
-        "leading_sector": None,
-        "leading_sector_return": np.nan,
-        "weakest_sector": None,
-        "weakest_sector_return": np.nan,
+    if period_returns.empty:
+        raise ValueError(
+            "No return data available for correlation analysis."
+        )
+
+    correlation = period_returns.corr()
+
+    if correlation.shape[0] < 2:
+        raise ValueError(
+            "At least two stocks are required for correlation analysis."
+        )
+
+    upper_triangle = correlation.where(
+        np.triu(
+            np.ones(correlation.shape),
+            k=1,
+        ).astype(bool)
+    )
+
+    pairs = upper_triangle.stack().dropna()
+
+    if pairs.empty:
+        raise ValueError(
+            "No valid stock correlation pairs available."
+        )
+
+    most_correlated_pair = pairs.idxmax()
+    most_correlated_value = float(
+        pairs.loc[most_correlated_pair]
+    )
+
+    least_correlated_pair = pairs.abs().idxmin()
+    least_correlated_value = float(
+        pairs.loc[least_correlated_pair]
+    )
+
+    return {
+        "Most Correlated Pair": (
+            f"{most_correlated_pair[0]} / "
+            f"{most_correlated_pair[1]}"
+        ),
+        "Most Correlated Value": most_correlated_value,
+        "Least Correlated Pair": (
+            f"{least_correlated_pair[0]} / "
+            f"{least_correlated_pair[1]}"
+        ),
+        "Least Correlated Value": least_correlated_value,
     }
 
-    sector_period_returns = {}
 
-    if (
-        sector_returns is not None
-        and not sector_returns.empty
-    ):
+def build_snapshot_data(
+    snapshot: dict[str, float],
+    market_data: pd.DataFrame,
+    universe: pd.DataFrame,
+    returns: pd.DataFrame,
+    start_date,
+    end_date,
+) -> dict:
+    stock_returns = calculate_stock_period_returns(
+        market_data=market_data,
+        start_date=str(start_date),
+        end_date=str(end_date),
+    )
 
-        for sector in sector_returns.columns:
+    breadth = calculate_market_breadth(stock_returns)
 
-            returns = (
-                sector_returns[sector]
-                .dropna()
-            )
+    best_stock = find_best_stock(stock_returns)
+    worst_stock = find_worst_stock(stock_returns)
 
-            if returns.empty:
-                continue
+    period_returns = returns.loc[
+        (returns.index >= pd.Timestamp(start_date))
+        & (returns.index <= pd.Timestamp(end_date))
+    ].copy()
 
-            sector_period_returns[
-                sector
-            ] = _period_return(
-                returns
-            )
+    sector_returns = {}
 
-    if sector_period_returns:
+    universe_mapping = universe[
+        ["sector", "yf_ticker"]
+    ].copy()
 
-        sector_series = (
-            pd.Series(
-                sector_period_returns,
-                dtype=float,
-            )
+    universe_mapping["yf_ticker"] = (
+        universe_mapping["yf_ticker"]
+        .astype(str)
+        .str.strip()
+    )
+
+    for sector in universe_mapping["sector"].dropna().unique():
+        tickers = universe_mapping.loc[
+            universe_mapping["sector"] == sector,
+            "yf_ticker",
+        ].tolist()
+
+        available_tickers = [
+            ticker
+            for ticker in tickers
+            if ticker in period_returns.columns
+        ]
+
+        if not available_tickers:
+            continue
+
+        daily_sector_returns = (
+            period_returns[available_tickers]
+            .mean(axis=1, skipna=True)
             .dropna()
         )
 
-        if not sector_series.empty:
+        if daily_sector_returns.empty:
+            continue
 
-            leading_sector = (
-                sector_series.idxmax()
-            )
+        sector_returns[sector] = (
+            1.0 + daily_sector_returns
+        ).prod() - 1.0
 
-            weakest_sector = (
-                sector_series.idxmin()
-            )
+    if not sector_returns:
+        raise ValueError(
+            "No sector returns available for snapshot."
+        )
 
-            result[
-                "leading_sector"
-            ] = leading_sector
+    sector_return_series = pd.Series(sector_returns)
 
-            result[
-                "leading_sector_return"
-            ] = float(
-                sector_series.loc[
-                    leading_sector
-                ]
-            )
+    best_sector = sector_return_series.idxmax()
+    worst_sector = sector_return_series.idxmin()
 
-            result[
-                "weakest_sector"
-            ] = weakest_sector
-
-            result[
-                "weakest_sector_return"
-            ] = float(
-                sector_series.loc[
-                    weakest_sector
-                ]
-            )
-
-    return result
-
-
-# ============================================================
-# TOP STOCK
-# ============================================================
-
-def _get_top_stock(
-    stock_performance,
-):
-
-    if (
-        stock_performance is None
-        or stock_performance.empty
-    ):
-
-        return None, np.nan
-
-    symbol_column = None
-
-    if "Symbol" in stock_performance.columns:
-
-        symbol_column = "Symbol"
-
-    elif "Ticker" in stock_performance.columns:
-
-        symbol_column = "Ticker"
-
-    if (
-        symbol_column is None
-        or "Total Return"
-        not in stock_performance.columns
-    ):
-
-        return None, np.nan
-
-    data = stock_performance[
-        [
-            symbol_column,
-            "Total Return",
-        ]
-    ].copy()
-
-    data = data.dropna(
-        subset=[
-            symbol_column,
-            "Total Return",
-        ]
+    correlation_pairs = calculate_stock_correlation_pairs(
+        returns=returns,
+        start_date=start_date,
+        end_date=end_date,
     )
 
-    if data.empty:
-        return None, np.nan
-
-    positive = data[
-        data["Total Return"] > 0
-    ]
-
-    if positive.empty:
-        return None, np.nan
-
-    row = positive.loc[
-        positive["Total Return"].idxmax()
-    ]
-
-    return (
-        str(row[symbol_column]),
-        float(row["Total Return"]),
-    )
-
-
-# ============================================================
-# CORRELATION LABEL
-# ============================================================
-
-def _correlation_label(
-    value,
-) -> str:
-
-    if value is None or pd.isna(value):
-
-        return "No relationship"
-
-    value = float(value)
-
-    if value >= 0.70:
-        return "High positive"
-
-    if value >= 0.30:
-        return "Moderate positive"
-
-    if value > -0.10:
-        return "Near zero"
-
-    if value > -0.70:
-        return "Moderate negative"
-
-    return "High negative"
-
-
-# ============================================================
-# CORRELATION RELATIONSHIPS
-# ============================================================
-
-def _correlation_relationships(
-    correlation,
-    observation_count,
-):
-
-    result = {
-        "highest_positive": None,
-        "strongest_negative": None,
-        "weakest": None,
-        "sufficient": (
-            observation_count
-            >= MIN_CORRELATION_OBSERVATIONS
+    return {
+        "Returns": snapshot["Returns"],
+        "Volatility": snapshot["Volatility"],
+        "Sharpe": snapshot["Sharpe"],
+        "Max Drawdown": snapshot["Max Drawdown"],
+        "Top Sector": best_sector,
+        "Top Sector Return": float(
+            sector_return_series.loc[best_sector]
         ),
+        "Worst Sector": worst_sector,
+        "Worst Sector Return": float(
+            sector_return_series.loc[worst_sector]
+        ),
+        "Top Stock": best_stock["Ticker"],
+        "Top Stock Return": float(
+            best_stock["Returns"]
+        ),
+        "Worst Stock": worst_stock["Ticker"],
+        "Worst Stock Return": float(
+            worst_stock["Returns"]
+        ),
+        "Advancing Stocks": breadth["Advancing Stocks"],
+        "Declining Stocks": breadth["Declining Stocks"],
+        "Stocks Tracked": breadth["Stocks Tracked"],
+        "Positive Stocks %": (
+            breadth["Advancing Stocks"]
+            / breadth["Stocks Tracked"]
+            if breadth["Stocks Tracked"] > 0
+            else float("nan")
+        ),
+        "Most Correlated Pair": correlation_pairs[
+            "Most Correlated Pair"
+        ],
+        "Most Correlated Value": correlation_pairs[
+            "Most Correlated Value"
+        ],
+        "Least Correlated Pair": correlation_pairs[
+            "Least Correlated Pair"
+        ],
+        "Least Correlated Value": correlation_pairs[
+            "Least Correlated Value"
+        ],
     }
 
-    # --------------------------------------------------------
-    # SHORT SAMPLE
-    # --------------------------------------------------------
 
-    if (
-        observation_count
-        < MIN_CORRELATION_OBSERVATIONS
-    ):
+def render_snapshot(
+    snapshot: dict[str, float],
+    market_data: pd.DataFrame,
+    universe: pd.DataFrame,
+    returns: pd.DataFrame,
+    start_date,
+    end_date,
+) -> None:
+    st.subheader("Market Snapshot")
 
-        return result
-
-    if (
-        correlation is None
-        or correlation.empty
-        or correlation.shape[1] < 2
-    ):
-
-        return result
-
-    sectors = list(
-        correlation.columns
+    data = build_snapshot_data(
+        snapshot=snapshot,
+        market_data=market_data,
+        universe=universe,
+        returns=returns,
+        start_date=start_date,
+        end_date=end_date,
     )
 
-    relationships = []
+    # Core market metrics
+    col1, col2, col3, col4 = st.columns(4)
 
-    for i in range(
-        len(sectors)
-    ):
-
-        for j in range(
-            i + 1,
-            len(sectors),
-        ):
-
-            first = sectors[i]
-            second = sectors[j]
-
-            value = correlation.loc[
-                first,
-                second,
-            ]
-
-            if pd.isna(value):
-                continue
-
-            value = float(value)
-
-            relationships.append(
-                {
-                    "first": first,
-                    "second": second,
-                    "value": value,
-                    "label": _correlation_label(
-                        value
-                    ),
-                }
-            )
-
-    if not relationships:
-        return result
-
-    positive = [
-        x
-        for x in relationships
-        if x["value"] > 0
-    ]
-
-    negative = [
-        x
-        for x in relationships
-        if x["value"] < 0
-    ]
-
-    if positive:
-
-        result[
-            "highest_positive"
-        ] = max(
-            positive,
-            key=lambda x: x["value"],
-        )
-
-    if negative:
-
-        result[
-            "strongest_negative"
-        ] = min(
-            negative,
-            key=lambda x: x["value"],
-        )
-
-    result[
-        "weakest"
-    ] = min(
-        relationships,
-        key=lambda x: abs(
-            x["value"]
-        ),
+    col1.metric(
+        "Returns",
+        f"{data['Returns']:.2%}",
     )
 
-    return result
-
-
-# ============================================================
-# MARKET SNAPSHOT
-# ============================================================
-
-def _render_market_snapshot(
-    metrics,
-    sector_returns,
-    market_returns,
-    correlation,
-    stock_performance=None,
-):
-
-    # ========================================================
-    # MARKET RETURN
-    # ========================================================
-
-    market_return = _period_return(
-        market_returns
+    col2.metric(
+        "Volatility",
+        f"{data['Volatility']:.2%}",
     )
 
-    # ========================================================
-    # AVERAGE SECTOR RETURN
-    # ========================================================
-
-    sector_period_returns = []
-
-    if (
-        sector_returns is not None
-        and not sector_returns.empty
-    ):
-
-        for sector in sector_returns.columns:
-
-            returns = (
-                sector_returns[sector]
-                .dropna()
-            )
-
-            if returns.empty:
-                continue
-
-            sector_period_returns.append(
-                _period_return(
-                    returns
-                )
-            )
-
-    if sector_period_returns:
-
-        avg_sector_return = float(
-            np.mean(
-                sector_period_returns
-            )
-        )
-
-    else:
-
-        avg_sector_return = np.nan
-
-    # ========================================================
-    # MARKET SERIES
-    # ========================================================
-
-    market_series = (
-        pd.Series(
-            market_returns
-        )
-        .dropna()
+    col3.metric(
+        "Sharpe",
+        f"{data['Sharpe']:.2f}",
     )
 
-    # ========================================================
-    # VOLATILITY
-    # ========================================================
-
-    if len(market_series) >= 2:
-
-        volatility = float(
-            market_series.std()
-            * np.sqrt(TRADING_DAYS)
-        )
-
-    else:
-
-        volatility = np.nan
-
-    # ========================================================
-    # SHARPE
-    # ========================================================
-
-    if (
-        len(market_series) >= 2
-        and market_series.std() > 0
-    ):
-
-        sharpe = float(
-            market_series.mean()
-            / market_series.std()
-            * np.sqrt(TRADING_DAYS)
-        )
-
-    else:
-
-        sharpe = np.nan
-
-    # ========================================================
-    # MAX DRAWDOWN
-    # ========================================================
-
-    if not market_series.empty:
-
-        wealth = (
-            1.0 + market_series
-        ).cumprod()
-
-        drawdown = (
-            wealth
-            / wealth.cummax()
-            - 1.0
-        )
-
-        max_drawdown = float(
-            drawdown.min()
-        )
-
-    else:
-
-        max_drawdown = np.nan
-
-    # ========================================================
-    # REGIME
-    # ========================================================
-
-    regime = _market_regime(
-        market_return=market_return,
-        market_returns=market_series,
-        sector_returns=sector_returns,
+    col4.metric(
+        "Max Drawdown",
+        f"{data['Max Drawdown']:.2%}",
     )
 
-    # ========================================================
-    # LEADERS
-    # ========================================================
+    # Best and worst performers
+    col1, col2, col3, col4 = st.columns(4)
 
-    leaders = _get_market_leaders(
-        metrics=metrics,
-        sector_returns=sector_returns,
-        market_returns=market_returns,
-        correlation=correlation,
+    col1.metric(
+        "Top Sector",
+        data["Top Sector"],
+        f"{data['Top Sector Return']:.2%}",
     )
 
-    # ========================================================
-    # TOP STOCK
-    # ========================================================
-
-    top_stock, top_stock_return = (
-        _get_top_stock(
-            stock_performance
-        )
+    col2.metric(
+        "Worst Sector",
+        data["Worst Sector"],
+        f"{data['Worst Sector Return']:.2%}",
     )
 
-    # ========================================================
-    # CORRELATION RELATIONSHIPS
-    # ========================================================
-
-    relationships = (
-        _correlation_relationships(
-            correlation=correlation,
-            observation_count=len(
-                market_series
-            ),
-        )
+    col3.metric(
+        "Top Stock",
+        data["Top Stock"],
+        f"{data['Top Stock Return']:.2%}",
     )
 
-    # ========================================================
-    # CORE METRICS
-    # ========================================================
-
-    cols = st.columns(6)
-
-    cols[0].caption("Regime")
-    cols[0].markdown(
-        f"**{regime}**"
+    col4.metric(
+        "Worst Stock",
+        data["Worst Stock"],
+        f"{data['Worst Stock Return']:.2%}",
     )
 
-    cols[1].caption("Return")
-    cols[1].markdown(
-        f"**{_format_pct(market_return)}**"
+    # Market breadth
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Advancing Stocks",
+        f"{data['Advancing Stocks']}",
     )
 
-    cols[2].caption(
-        "Avg Sector Return"
-    )
-    cols[2].markdown(
-        f"**{_format_pct(avg_sector_return)}**"
+    col2.metric(
+        "Declining Stocks",
+        f"{data['Declining Stocks']}",
     )
 
-    cols[3].caption("Volatility")
-    cols[3].markdown(
-        f"**{_format_pct(volatility)}**"
+    col3.metric(
+        "Stocks Positive",
+        f"{data['Positive Stocks %']:.1%}",
     )
 
-    cols[4].caption("Sharpe")
-    cols[4].markdown(
-        f"**{_format_number(sharpe)}**"
+    # Correlation summary
+    col1, col2 = st.columns(2)
+
+    col1.metric(
+        "Most Correlated Stock Pair",
+        data["Most Correlated Pair"],
+        f"{data['Most Correlated Value']:.2f}",
     )
 
-    cols[5].caption("Max Drawdown")
-    cols[5].markdown(
-        f"**{_format_pct(max_drawdown)}**"
+    col2.metric(
+        "Least Correlated Stock Pair",
+        data["Least Correlated Pair"],
+        f"{data['Least Correlated Value']:.2f}",
     )
-
-    # ========================================================
-    # LEADERS & RELATIONSHIPS
-    # ========================================================
-
-    leader_cols = st.columns(5)
-
-    # ========================================================
-    # LEADING SECTOR
-    # ========================================================
-
-    leader_cols[0].caption(
-        "Leading Sector"
-    )
-
-    if leaders["leading_sector"] is not None:
-
-        leader_cols[0].markdown(
-            f"**{leaders['leading_sector']}**"
-        )
-
-        leader_cols[0].caption(
-            _format_pct(
-                leaders[
-                    "leading_sector_return"
-                ]
-            )
-        )
-
-    else:
-
-        leader_cols[0].markdown(
-            "**—**"
-        )
-
-    # ========================================================
-    # WEAKEST SECTOR
-    # ========================================================
-
-    leader_cols[1].caption(
-        "Weakest Sector"
-    )
-
-    if leaders["weakest_sector"] is not None:
-
-        leader_cols[1].markdown(
-            f"**{leaders['weakest_sector']}**"
-        )
-
-        leader_cols[1].caption(
-            _format_pct(
-                leaders[
-                    "weakest_sector_return"
-                ]
-            )
-        )
-
-    else:
-
-        leader_cols[1].markdown(
-            "**—**"
-        )
-
-    # ========================================================
-    # TOP STOCK
-    # ========================================================
-
-    leader_cols[2].caption(
-        "Top Stock"
-    )
-
-    if top_stock is not None:
-
-        leader_cols[2].markdown(
-            f"**{top_stock}**"
-        )
-
-        leader_cols[2].caption(
-            _format_pct(
-                top_stock_return
-            )
-        )
-
-    else:
-
-        leader_cols[2].markdown(
-            "**—**"
-        )
-
-    # ========================================================
-    # HIGHEST POSITIVE CORRELATION
-    # ========================================================
-
-    leader_cols[3].caption(
-        "Highest Positive Correlation"
-    )
-
-    if not relationships["sufficient"]:
-
-        leader_cols[3].markdown(
-            "**Insufficient observations**"
-        )
-
-        leader_cols[3].caption(
-            f"Need at least "
-            f"{MIN_CORRELATION_OBSERVATIONS} "
-            f"observations"
-        )
-
-    else:
-
-        highest_positive = (
-            relationships[
-                "highest_positive"
-            ]
-        )
-
-        if highest_positive:
-
-            leader_cols[3].markdown(
-                f"{highest_positive['first']} ↔ "
-                f"{highest_positive['second']} "
-                f"({highest_positive['value']:+.2f})"
-            )
-
-            leader_cols[3].caption(
-                highest_positive["label"]
-            )
-
-        else:
-
-            leader_cols[3].markdown(
-                "**—**"
-            )
-
-    # ========================================================
-    # WEAKEST CORRELATION
-    # ========================================================
-
-    leader_cols[4].caption(
-        "Weakest Correlation"
-    )
-
-    if not relationships["sufficient"]:
-
-        leader_cols[4].markdown(
-            "**Insufficient observations**"
-        )
-
-        leader_cols[4].caption(
-            f"Need at least "
-            f"{MIN_CORRELATION_OBSERVATIONS} "
-            f"observations"
-        )
-
-    else:
-
-        weakest = relationships[
-            "weakest"
-        ]
-
-        if weakest:
-
-            leader_cols[4].markdown(
-                f"{weakest['first']} ↔ "
-                f"{weakest['second']} "
-                f"({weakest['value']:+.2f})"
-            )
-
-            leader_cols[4].caption(
-                weakest["label"]
-            )
-
-        else:
-
-            leader_cols[4].markdown(
-                "**—**"
-            )
-
-    # ========================================================
-    # STRONGEST NEGATIVE
-    # ========================================================
-
-    if relationships["sufficient"]:
-
-        strongest_negative = (
-            relationships[
-                "strongest_negative"
-            ]
-        )
-
-        if strongest_negative:
-
-            st.caption(
-                "Strongest negative correlation: "
-                f"{strongest_negative['first']} ↔ "
-                f"{strongest_negative['second']} "
-                f"({strongest_negative['value']:+.2f}) "
-                f"• {strongest_negative['label']}"
-            )
-
-    else:
-
-        st.caption(
-            "Correlation relationships are hidden for "
-            f"short windows with fewer than "
-            f"{MIN_CORRELATION_OBSERVATIONS} observations."
-        )
-
-
-# ============================================================
-# PUBLIC COMPATIBILITY
-# ============================================================
-
-render_market_snapshot = (
-    _render_market_snapshot
-)

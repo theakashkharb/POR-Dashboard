@@ -1,80 +1,162 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
-import numpy as np
-
 import pandas as pd
-
 import streamlit as st
 
-import plotly.graph_objects as go
-
-
-from .core import *
-from .core import (
-    _safe_float,
-    _format_percent,
-    _format_sharpe,
-    _normalize_dates,
-    _analysis_window,
-    _get_price_matrix,
-    _get_returns,
-    _annualized_return,
-    _total_return,
-    _annualized_volatility,
-    _sharpe_ratio,
-    _maximum_drawdown,
-    _calculate_sector_returns,
-    _market_metrics,
-    _pastel_sector_style,
-    _pastel_stock_style,
-    _correlation_relationships,
-    TRADING_DAYS,
-    PERIOD_OPTIONS,
+from src.analytics.market import (
+    calculate_annualized_volatility,
+    calculate_maximum_drawdown,
+    calculate_sharpe_ratio,
 )
 
-# ============================================================
-# SECTION
-# ============================================================
 
-def _build_sector_performance(
-    sector_returns: pd.DataFrame,
+def build_sector_performance(
+    returns: pd.DataFrame,
+    universe: pd.DataFrame,
+    start_date,
+    end_date,
 ) -> pd.DataFrame:
+    required_universe_columns = {"sector", "yf_ticker"}
+    missing_columns = required_universe_columns - set(universe.columns)
 
-    if sector_returns.empty:
-        return pd.DataFrame()
-
-    rows = []
-
-    for sector in sector_returns.columns:
-
-        returns = sector_returns[sector].dropna()
-
-        if returns.empty:
-            continue
-
-        rows.append(
-            {
-                "Sector": sector,
-                "Total Return": _total_return(returns),
-                "Annualized Return": _annualized_return(returns),
-                "Volatility": _annualized_volatility(returns),
-                "Sharpe": _sharpe_ratio(returns),
-                "Max Drawdown": _maximum_drawdown(returns),
-            }
+    if missing_columns:
+        raise ValueError(
+            f"Universe is missing columns: {sorted(missing_columns)}"
         )
 
-    if not rows:
-        return pd.DataFrame()
+    period_returns = returns.loc[
+        (returns.index >= pd.Timestamp(start_date))
+        & (returns.index <= pd.Timestamp(end_date))
+    ].copy()
 
-    return (
-        pd.DataFrame(rows)
+    if period_returns.empty:
+        raise ValueError(
+            "No return data available for selected period."
+        )
+
+    mapping = universe[["sector", "yf_ticker"]].copy()
+
+    mapping["yf_ticker"] = (
+        mapping["yf_ticker"]
+        .astype(str)
+        .str.strip()
+    )
+
+    sector_data = {}
+
+    for sector in mapping["sector"].dropna().unique():
+        sector_tickers = mapping.loc[
+            mapping["sector"] == sector,
+            "yf_ticker",
+        ].tolist()
+
+        available_tickers = [
+            ticker
+            for ticker in sector_tickers
+            if ticker in period_returns.columns
+        ]
+
+        if not available_tickers:
+            continue
+
+        daily_sector_returns = period_returns[
+            available_tickers
+        ].mean(
+            axis=1,
+            skipna=True,
+        )
+
+        daily_sector_returns = daily_sector_returns.dropna()
+
+        if daily_sector_returns.empty:
+            continue
+
+        sector_data[sector] = {
+            "Returns": (1.0 + daily_sector_returns).prod() - 1.0,
+            "Volatility": calculate_annualized_volatility(
+                daily_sector_returns
+            ),
+            "Sharpe": calculate_sharpe_ratio(
+                daily_sector_returns
+            ),
+            "Max Drawdown": calculate_maximum_drawdown(
+                daily_sector_returns
+            ),
+            "Stocks": len(available_tickers),
+        }
+
+    if not sector_data:
+        raise ValueError(
+            "No sector performance data could be created."
+        )
+
+    result = (
+        pd.DataFrame.from_dict(
+            sector_data,
+            orient="index",
+        )
+        .reset_index()
+        .rename(columns={"index": "Sector"})
+    )
+
+    result = (
+        result
         .sort_values(
-            "Annualized Return",
+            "Returns",
             ascending=False,
         )
         .reset_index(drop=True)
     )
 
+    return result
 
+
+def render_sector_performance(
+    returns: pd.DataFrame,
+    universe: pd.DataFrame,
+    start_date,
+    end_date,
+) -> None:
+    st.subheader("Sector Performance")
+
+    sector_data = build_sector_performance(
+        returns=returns,
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    display_data = sector_data.copy()
+
+    display_data["Returns"] = display_data["Returns"].map(
+        lambda value: f"{value:.2%}"
+    )
+
+    display_data["Volatility"] = display_data["Volatility"].map(
+        lambda value: f"{value:.2%}"
+    )
+
+    display_data["Sharpe"] = display_data["Sharpe"].map(
+        lambda value: f"{value:.2f}"
+    )
+
+    display_data["Max Drawdown"] = display_data[
+        "Max Drawdown"
+    ].map(
+        lambda value: f"{value:.2%}"
+    )
+
+    st.dataframe(
+        display_data[
+            [
+                "Sector",
+                "Returns",
+                "Volatility",
+                "Sharpe",
+                "Max Drawdown",
+                "Stocks",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
