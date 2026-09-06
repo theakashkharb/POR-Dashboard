@@ -24,6 +24,13 @@ MARKET_DATA_FILE = (
     / "nifty500.parquet"
 )
 
+NIFTY50_DATA_FILE = (
+    PROJECT_ROOT
+    / "data"
+    / "market"
+    / "nifty50.parquet"
+)
+
 
 def load_universe() -> pd.DataFrame:
     """
@@ -47,6 +54,18 @@ def load_market_data() -> pd.DataFrame:
         )
 
     return pd.read_parquet(MARKET_DATA_FILE)
+
+
+def load_nifty50_data() -> pd.DataFrame:
+    """
+    Load the NIFTY 50 historical market data.
+    """
+    if not NIFTY50_DATA_FILE.exists():
+        raise FileNotFoundError(
+            f"NIFTY 50 data file not found: {NIFTY50_DATA_FILE}"
+        )
+
+    return pd.read_parquet(NIFTY50_DATA_FILE)
 
 
 def load_market_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import plotly.express as px
 import streamlit as st
 
-from src.analytics.stocks import build_market_map_data
+from src.analytics.stocks.market import build_market_map_data
 
 
 def render_market_map(

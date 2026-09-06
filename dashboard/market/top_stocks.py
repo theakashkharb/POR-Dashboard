@@ -8,7 +8,7 @@ from src.analytics.market import (
     calculate_maximum_drawdown,
     calculate_sharpe_ratio,
 )
-from src.analytics.stocks import calculate_stock_period_returns
+from src.analytics.stocks.market import calculate_stock_period_returns
 from src.features.returns import calculate_simple_returns, create_price_matrix
 
 

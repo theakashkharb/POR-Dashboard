@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.analytics.stocks import (
+from src.analytics.stocks.market import (
     calculate_market_breadth,
     calculate_stock_period_returns,
     find_best_stock,

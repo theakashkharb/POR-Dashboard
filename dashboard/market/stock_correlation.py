@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.analytics.stocks import calculate_stock_period_returns
+from src.analytics.stocks.market import calculate_stock_period_returns
 
 
 CORRELATION_STOCK_COUNT = 20

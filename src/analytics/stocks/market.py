@@ -8,14 +8,6 @@ def calculate_stock_period_returns(
     start_date: str,
     end_date: str,
 ) -> pd.DataFrame:
-    """
-    Calculate stock returns over a selected period.
-
-    A stock receives a period return only when it has
-    a valid closing price at both the first and last
-    available trading dates of the selected period.
-    """
-
     required_columns = {
         "Ticker",
         "Date",
@@ -102,11 +94,6 @@ def build_market_map_data(
     start_date: str,
     end_date: str,
 ) -> pd.DataFrame:
-    """
-    Build Market Map data for all stocks that have
-    a valid period return.
-    """
-
     required_columns = {
         "sector",
         "symbol",
@@ -176,10 +163,6 @@ def build_market_map_data(
 def find_best_stock(
     stock_returns: pd.DataFrame,
 ) -> pd.Series:
-    """
-    Return the best-performing stock.
-    """
-
     if stock_returns.empty:
         raise ValueError(
             "Stock return data is empty."
@@ -208,10 +191,6 @@ def find_best_stock(
 def find_worst_stock(
     stock_returns: pd.DataFrame,
 ) -> pd.Series:
-    """
-    Return the worst-performing stock.
-    """
-
     if stock_returns.empty:
         raise ValueError(
             "Stock return data is empty."
@@ -240,11 +219,6 @@ def find_worst_stock(
 def calculate_market_breadth(
     stock_returns: pd.DataFrame,
 ) -> dict[str, int]:
-    """
-    Calculate the number of advancing and declining
-    stocks for the selected period.
-    """
-
     if stock_returns.empty:
         raise ValueError(
             "Stock return data is empty."
